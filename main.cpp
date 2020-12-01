@@ -32,7 +32,7 @@ shared_ptr<LinHttpHandler> handler = make_shared<LinHttpHandler>();
 json get_weather();
 bool initialize_hue();
 bool person_detected();
-LightVals prescribe_light_setting(int, int, int, const map<float, LightVals>&);
+LightVals prescribe_light_setting(float, const map<float, LightVals>&);
 LightVals interpolate_light_vals(const LightVals&, const LightVals&, float, float, float);
 
 int main() {
@@ -87,7 +87,8 @@ int main() {
 		
 		
     // get the light settings, and prescribe light settings
-    LightVals v = prescribe_light_setting(sunrise, sunset, curr_time, schedule);
+    float curr_time_f = (curr_time - sunrise) / (sunset - sunrise);
+    LightVals v = prescribe_light_setting(curr_time_f, schedule);
     lights[0].setColorXY(v.x, v.y);
     lights[1].setColorXY(v.x, v.y);
     lights[2].setColorXY(v.x, v.y);
@@ -141,10 +142,7 @@ bool person_detected() {
   return true;
 }
 
-LightVals prescribe_light_setting(int sunrise, int sunset, int curr_time, const map<float, LightVals>& schedule) {
-  // map current time to a value between 0 and 1
-  float curr_time_f = (curr_time - sunrise) / (curr_time - sunset);
-
+LightVals prescribe_light_setting(float curr_time_f, const map<float, LightVals>& schedule) {
   // find the first value in schedule greator or equal to current time
   auto it = schedule.lower_bound(curr_time_f);
   if (it == schedule.begin()) {
