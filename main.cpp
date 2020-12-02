@@ -52,21 +52,25 @@ int main() {
     config_file >> t >> temp.x >> temp.y >> temp.bri >> temp.on;
     schedule[t] = temp;
   }
+  for (auto it = schedule.begin(); it != schedule.end(); it++) {
+    cout << it->first << ": " << it->second.x << it->second.y << it->second.bri << it->second.on << endl;
+  }
   config_file.close();
   // test the weather api
   json j = get_weather();
-  cout << j["sys"]["sunrise"] << endl;
-  cout << j["sys"]["sunset"] << endl;
+  cout << "Sunrise: " << j["sys"]["sunrise"] << endl;
+  cout << "Sunset: " << j["sys"]["sunset"] << endl;
   // connect to the hue bridge
   initialize_hue();
+  cout << "Lights:" << endl;
   for (int i = 0; i < lights.size(); ++i) {
-    cout << lights[i].getColorType() << endl;
+    cout << i << ": " << lights[i].getName() << endl;
   }
   // initialize sensors
   wiringPiSetup();
   const int led = 5;
   pinMode(led, OUTPUT);
-  cout << "Intitialization succseful" << endl;
+  cout << "Intitialization successful" << endl << endl;
   goto loop;
   
  loop:
@@ -79,36 +83,51 @@ int main() {
     time_t curr_time = time(0);
     if (curr_time > sunset) {
       // update the sunrise and sunset
+      // this is not the most efficient, as sunrise and sunset will not update until we reach the next day
+      // so this will keep calling the api unecessarily, however it works for now
       json j = get_weather();
       sunrise = j["sys"]["sunrise"];
       sunset = j["sys"]["sunset"];
     }
     // check the last command
 		
-		
+    
     // get the light settings, and prescribe light settings
-    float curr_time_f = (curr_time - sunrise) / (sunset - sunrise);
+    float curr_time_f = static_cast<float>((curr_time - sunrise)) / (sunset - sunrise);
     LightVals v = prescribe_light_setting(curr_time_f, schedule);
-    lights[0].setColorXY(v.x, v.y);
-    lights[1].setColorXY(v.x, v.y);
-    lights[2].setColorXY(v.x, v.y);
+    if (v.on) {
+      if (!lights[0].isOn())
+        lights[0].On();
+      if (!lights[1].isOn())
+        lights[1].On();
+      if (!lights[2].isOn())
+        lights[2].On();
+      lights[0].setColorXY(v.x, v.y);
+      lights[1].setColorXY(v.x, v.y);
+      lights[2].setColorXY(v.x, v.y);
+      lights[0].setBrightness(v.bri);
+      lights[1].setBrightness(v.bri);
+      lights[2].setBrightness(v.bri);
+    } else {
+      lights[0].Off();
+      lights[1].Off();
+      lights[2].Off();
+    }
    
-    cout << curr_time << endl;
+    cout << curr_time << " " << curr_time_f << " " << v.on << endl;
     sleep(15);
   }
   
  wait:
-  lights[0].On();
-  lights[1].On();
-  lights[2].On();
-  while (true) {
-    int brightness = rand() % 256;
-    lights[0].setBrightness(brightness);
-    lights[1].setBrightness(brightness);
-    int brightness2 = rand() % 256;
-    lights[2].setBrightness(brightness2);
+  lights[0].Off();
+  lights[1].Off();
+  lights[2].Off();
+  while (!person_detected()) {
     sleep(1.5);
   }
+  
+  goto loop;
+  
   return 0;
 }
 
