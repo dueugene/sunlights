@@ -14,6 +14,6 @@ cmake ..
 ```
 
 ## todo:
-* handle exceptions when communication with bridge is unsuccessful
 * incorporate IR sensor to detect when person is present in room or not
 * add manual mode, when control of the lights is given to the user
+* add ability to attach different schedules to different lights

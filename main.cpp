@@ -32,8 +32,9 @@ shared_ptr<LinHttpHandler> handler = make_shared<LinHttpHandler>();
 json get_weather();
 bool initialize_hue();
 bool person_detected();
-LightVals prescribe_light_setting(float, const map<float, LightVals>&);
+LightVals get_light_setting(float, const map<float, LightVals>&);
 LightVals interpolate_light_vals(const LightVals&, const LightVals&, float, float, float);
+bool set_light_vals(const LightVals& v);
 
 int main() {
   // perform initialization
@@ -84,7 +85,7 @@ int main() {
     if (curr_time > sunset) {
       // update the sunrise and sunset
       // this is not the most efficient, as sunrise and sunset will not update until we reach the next day
-      // so this will keep calling the api unecessarily, however it works for now
+      // so this will keep calling the api until we reach the next day, however it works for now
       json j = get_weather();
       sunrise = j["sys"]["sunrise"];
       sunset = j["sys"]["sunset"];
@@ -94,7 +95,101 @@ int main() {
     
     // get the light settings, and prescribe light settings
     float curr_time_f = static_cast<float>((curr_time - sunrise)) / (sunset - sunrise);
-    LightVals v = prescribe_light_setting(curr_time_f, schedule);
+    LightVals v = get_light_setting(curr_time_f, schedule);
+    string time_string = asctime(localtime(&curr_time));
+    time_string.erase(time_string.size()-1);
+    cout << time_string << " " << curr_time_f << " " << v.on << endl;
+    set_light_vals(v);
+   
+    sleep(15);
+  }
+  
+ wait:
+  LightVals v;
+  v.on = false;
+  set_light_vals(v);
+  while (!person_detected()) {
+    sleep(1.5);
+  }
+  
+  goto loop;
+  
+  return 0;
+}
+
+json get_weather() {
+  // send an http request to the weather api
+  // uses the LinHttpHandler already implemented inside hueplusplus
+  string url = "api.openweathermap.org";
+  string msg = "http://" + url + "/data/2.5/weather?q=" + weather_city + "&units=metric&appid=" + weather_id;
+  json j_empty;
+  json reply;
+  try {
+    reply = handler->GETJson(msg, j_empty, url);
+  } catch (...) {
+    cout << "exception happend in get_weather()" << endl;
+    reply = j_empty;
+  }
+  return reply;
+}
+
+bool initialize_hue() {
+  // finds the hue bridge, and intializes the variables which store the lights
+  HueFinder finder(handler);
+  try {
+    vector<HueFinder::HueIdentification> bridges = finder.FindBridges();
+    if (bridges.empty()) {
+      return false;
+    } else {
+      bridge = make_shared<Hue>(bridges[0].ip, bridges[0].port, hue_id, handler);
+      cout << "bridge found with ip address: " << bridge->getBridgeIP() << endl;
+      // populate lights vector, (manually configured to the setup of my room)
+      lights.push_back(bridge->getLight(1));
+      lights.push_back(bridge->getLight(2));
+      lights.push_back(bridge->getLight(3));
+    }
+  } catch (...) {
+    cout << "exception happenned in initialize_hue()" << endl;
+    return false;
+  }
+  return true;
+}
+
+bool person_detected() {
+  return true;
+}
+
+// get the current light settings, based on the current time of day, and the lights schedule
+LightVals get_light_setting(float curr_time_f, const map<float, LightVals>& schedule) {
+  // find the first value in schedule greator or equal to current time
+  auto it = schedule.lower_bound(curr_time_f);
+  if (it == schedule.begin()) {
+    // extrapolate left
+    return it->second;
+  } else if (it == schedule.end()) {
+    // extrapolate right
+    return schedule.rbegin()->second;
+  }
+  // we have to interpolate values
+  auto it_prev = prev(it);
+  return interpolate_light_vals(it_prev->second, it->second, it_prev->first, it->first, curr_time_f);
+}
+
+// interpolate light values between two LightVals settings
+LightVals interpolate_light_vals(const LightVals& l1, const LightVals& l2, float x1, float x2, float x_target) {
+  LightVals result = l1;
+  float slope = (l2.x - l1.x) / (x2 - x1);
+  result.x = slope*(x_target - x1) + l1.x;
+  slope = (l2.y - l1.y) / (x2 - x1);
+  result.y = slope*(x_target - x1) + l1.y;
+  slope = (l2.bri - l1.bri) / (x2 - x1);
+  result.bri = static_cast<int>(slope*(x_target - x1)) + l1.bri;
+  return result;
+}
+
+// send LightVals to hue bridge
+bool set_light_vals(const LightVals& v) {
+  try {
     if (v.on) {
       if (!lights[0].isOn())
         lights[0].On();
@@ -113,76 +208,9 @@ int main() {
       lights[1].Off();
       lights[2].Off();
     }
-   
-    cout << curr_time << " " << curr_time_f << " " << v.on << endl;
-    sleep(15);
-  }
-  
- wait:
-  lights[0].Off();
-  lights[1].Off();
-  lights[2].Off();
-  while (!person_detected()) {
-    sleep(1.5);
-  }
-  
-  goto loop;
-  
-  return 0;
-}
-
-json get_weather() {
-  // send an http request to the weather api
-  // uses the LinHttpHandler already implemented inside hueplusplus
-  string url = "api.openweathermap.org";
-  string msg = "http://" + url + "/data/2.5/weather?q=" + weather_city + "&units=metric&appid=" + weather_id;
-  json j_empty;
-  return handler->GETJson(msg, j_empty, url);
-}
-
-bool initialize_hue() {
-  // finds the hue bridge, and intializes the variables which store the lights
-  HueFinder finder(handler);
-  vector<HueFinder::HueIdentification> bridges = finder.FindBridges();
-  if (bridges.empty()) {
+  } catch (...) {
+    cout << "exception occured in set_light_vals()" << endl;
     return false;
-  } else {
-    bridge = make_shared<Hue>(bridges[0].ip, bridges[0].port, hue_id, handler);
-    cout << "bridge found with ip address: " << bridge->getBridgeIP() << endl;
-    // populate lights vector, (manually configured to the setup of my room)
-    lights.push_back(bridge->getLight(1));
-    lights.push_back(bridge->getLight(2));
-    lights.push_back(bridge->getLight(3));
   }
-  return true;  
-}
-
-bool person_detected() {
   return true;
-}
-
-LightVals prescribe_light_setting(float curr_time_f, const map<float, LightVals>& schedule) {
-  // find the first value in schedule greator or equal to current time
-  auto it = schedule.lower_bound(curr_time_f);
-  if (it == schedule.begin()) {
-    // extrapolate left
-    return it->second;
-  } else if (it == schedule.end()) {
-    // extrapolate right
-    return schedule.rbegin()->second;
-  }
-  // we have to interpolate values
-  auto it_prev = prev(it);
-  return interpolate_light_vals(it_prev->second, it->second, it_prev->first, it->first, curr_time_f);
-}
-
-LightVals interpolate_light_vals(const LightVals& l1, const LightVals& l2, float x1, float x2, float x_target) {
-  LightVals result = l1;
-  float slope = (l2.x - l1.x) / (x2 - x1);
-  result.x = slope*(x_target - x1) + l1.x;
-  slope = (l2.y - l1.y) / (x2 - x1);
-  result.y = slope*(x_target - x1) + l1.y;
-  slope = (l2.bri - l1.bri) / (x2 - x1);
-  result.bri = static_cast<int>(slope*(x_target - x1)) + l1.bri;
-  return result;
 }
