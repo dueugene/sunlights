@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <ctime>
+#include <iomanip>
 
 #include <hueplusplus/Hue.h>
 #include <hueplusplus/LinHttpHandler.h>
@@ -77,18 +78,26 @@ int main() {
  loop:
   time_t sunrise = 0;
   time_t sunset = 0;
+  time_t time_till_next_midnight = 0;
   while (person_detected()) {
     // get the current linux "epoch time", since sunrise and sunset are specified relative to this time
     // stack exchange says the c standard does not gurantee time(0) represents the begining of epoch time,
     // however I have manually confirmed it works on the raspberry pi
     time_t curr_time = time(0);
-    if (curr_time > sunset) {
+    if (curr_time > time_till_next_midnight) {
       // update the sunrise and sunset
-      // this is not the most efficient, as sunrise and sunset will not update until we reach the next day
-      // so this will keep calling the api until we reach the next day, however it works for now
       json j = get_weather();
       sunrise = j["sys"]["sunrise"];
       sunset = j["sys"]["sunset"];
+      // convert sunset to local time, and reset it to midnight
+      struct tm *sunset_tm = localtime(&curr_time);
+      sunset_tm->tm_sec = 0;
+      sunset_tm->tm_min = 0;
+      sunset_tm->tm_hour = 0;
+      time_till_next_midnight = mktime(sunset_tm);
+      // set the next midnight time, + 5 seconds
+      time_till_next_midnight += 3600*24 + 5;
+      cout << "Updated next midnight: " << put_time(localtime(&time_till_next_midnight), "%x %X") << endl;
     }
     // check the last command
 		
@@ -96,9 +105,8 @@ int main() {
     // get the light settings, and prescribe light settings
     float curr_time_f = static_cast<float>((curr_time - sunrise)) / (sunset - sunrise);
     LightVals v = get_light_setting(curr_time_f, schedule);
-    string time_string = asctime(localtime(&curr_time));
-    time_string.erase(time_string.size()-1);
-    cout << time_string << " " << curr_time_f << " " << v.on << endl;
+    struct tm *timeinfo = localtime(&curr_time);
+    cout << put_time(timeinfo, "%x %X") << " " << curr_time_f << " " << v.on << endl;
     set_light_vals(v);
    
     sleep(15);
@@ -113,7 +121,8 @@ int main() {
   }
   
   goto loop;
-  
+
+ end:
   return 0;
 }
 
