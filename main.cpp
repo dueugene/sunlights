@@ -26,7 +26,8 @@ struct LightVals {
 string weather_id, weather_city, hue_id;
 shared_ptr<Hue> bridge(nullptr);
 vector<reference_wrapper<HueLight>> lights;
-map<float, LightVals> schedule; 
+vector<map<float, LightVals>> schedules;
+vector<int> lights_to_schedule;
 shared_ptr<LinHttpHandler> handler = make_shared<LinHttpHandler>();
 
 // declare functions
@@ -36,7 +37,8 @@ bool initialize_hue();
 bool person_detected();
 LightVals get_light_setting(float, const map<float, LightVals>&);
 LightVals interpolate_light_vals(const LightVals&, const LightVals&, float, float, float);
-bool set_light_vals(const LightVals& v);
+bool set_light_vals(HueLight& light, const LightVals& v);
+map<float, LightVals> read_schedule_file(string filename);
 
 int main() {
  initialize:
@@ -54,19 +56,47 @@ int main() {
   config_file >> hue_id;
   config_file >> weather_city;
   config_file >> weather_id;
-  int n;
-  config_file >> n;
-  for (int i = 0; i < n; ++ i) {
-    LightVals temp;
-    float t;
-    config_file >> t >> temp.x >> temp.y >> temp.bri >> temp.on;
-    schedule[t] = temp;
+  int n_schedules;
+  config_file >> n_schedules;
+  vector<string> schedule_filenames(n_schedules);
+  for (int i = 0; i < n_schedules; i++) {
+    config_file >> schedule_filenames[i];
   }
-  cout << "lights schedule: " << endl;
-  for (auto it = schedule.begin(); it != schedule.end(); it++) {
-    cout << it->first << ": " << it->second.x << it->second.y << it->second.bri << it->second.on << endl;
+  // read schedule attachment configuration
+  int k;
+  while (config_file >> k) {
+    lights_to_schedule.push_back(k);
   }
   config_file.close();
+
+  // get light schedules
+  schedules = vector<map<float, LightVals>>(n_schedules);
+  for (int i = 0; i < n_schedules; i++) {
+    schedules[i] = read_schedule_file(schedule_filenames[i]);
+    cout << "lights schedule: " << endl;
+    
+    for (auto it = schedules[i].begin(); it != schedules[i].end(); it++) {
+      cout << it->first << ": " << it->second.x << it->second.y << it->second.bri << it->second.on << endl;
+    }
+  }
+
+  // connect to the hue bridge
+  if (initialize_hue() == false) {return 0;}
+
+  if (lights.size() != lights_to_schedule.size()) {
+    cout << "error: there are discreprency between lights and schedules " << endl;
+    return 0;
+  }
+
+  if (*max_element(lights_to_schedule.begin(), lights_to_schedule.end()) >= n_schedules) {
+    cout << "error: light attached to a schedule that does not exist " << endl;
+  }
+
+  cout << "Lights:" << endl;
+  for (int i = 0; i < lights.size(); ++i) {
+    cout << i << ": " << lights[i].get().getName() << ", schedule: " << schedule_filenames[lights_to_schedule[i]] << endl;
+  }
+  
   
   // test the weather api
   json j = get_weather();
@@ -76,13 +106,6 @@ int main() {
   } else {
     cout << "failed on getting weather" << endl;
     return 0;
-  }
-  
-  // connect to the hue bridge
-  if (initialize_hue() == false) {return 0;}
-  cout << "Lights:" << endl;
-  for (int i = 0; i < lights.size(); ++i) {
-    cout << i << ": " << lights[i].get().getName() << endl;
   }
   
   // initialize sensors
@@ -129,10 +152,14 @@ int main() {
     
     // get the light settings, and prescribe light settings
     float curr_time_f = static_cast<float>((curr_time - sunrise)) / (sunset - sunrise);
-    LightVals v = get_light_setting(curr_time_f, schedule);
+    for (int i = 0; i < lights.size(); i++) {
+      LightVals v = get_light_setting(curr_time_f, schedules[lights_to_schedule[i]]);
+      // currently if exception occurs in this call, we ignore it and try again next loop
+      set_light_vals(lights[i].get(), v);
+    }
+
     struct tm *timeinfo = localtime(&curr_time);
-    cout << put_time(timeinfo, "%x %X") << " " << curr_time_f << " " << v.on << endl;
-    set_light_vals(v);
+    cout << put_time(timeinfo, "%x %X") << " " << curr_time_f << endl;
    
     sleep(15);
   }
@@ -140,7 +167,9 @@ int main() {
  wait:
   LightVals v;
   v.on = false;
-  set_light_vals(v);
+  for (int i = 0; i < lights.size(); i++) {
+    set_light_vals(lights[i].get(), v);
+  }
   while (!person_detected()) {
     sleep(1.5);
   }
@@ -173,6 +202,7 @@ bool initialize_hue() {
     HueFinder finder(handler);
     vector<HueFinder::HueIdentification> bridges = finder.FindBridges();
     if (bridges.empty()) {
+      cout << "could no find bridge" << endl;
       return false;
     } else {
       bridge = make_shared<Hue>(bridges[0].ip, bridges[0].port, hue_id, handler);
@@ -222,29 +252,37 @@ LightVals interpolate_light_vals(const LightVals& l1, const LightVals& l2, float
 }
 
 // send LightVals to hue bridge
-bool set_light_vals(const LightVals& v) {
+bool set_light_vals(HueLight& light, const LightVals& v) {
   try {
     if (v.on) {
-      lights[0].get().setColorXY(v.x, v.y);
-      lights[1].get().setColorXY(v.x, v.y);
-      lights[2].get().setColorXY(v.x, v.y);
-      lights[0].get().setBrightness(v.bri);
-      lights[1].get().setBrightness(v.bri);
-      lights[2].get().setBrightness(v.bri);
-      if (!lights[0].get().isOn())
-        lights[0].get().On();
-      if (!lights[1].get().isOn())
-        lights[1].get().On();
-      if (!lights[2].get().isOn())
-        lights[2].get().On();
+      light.setColorXY(v.x, v.y);
+      light.setBrightness(v.bri);
+      if (!light.isOn()) {
+        light.On();
+      }
     } else {
-      lights[0].get().Off();
-      lights[1].get().Off();
-      lights[2].get().Off();
+      light.Off();
     }
   } catch (...) {
     cout << "exception occured in set_light_vals()" << endl;
     return false;
   }
   return true;
+}
+
+map<float, LightVals> read_schedule_file(string filename) {
+  map<float, LightVals> result;
+  ifstream file;
+  file.open(filename);
+  int n;
+  file >> n;
+  for (int i = 0; i < n; i++) {
+    LightVals temp;
+    float t;
+    file >> t >> temp.x >> temp.y >> temp.bri >> temp.on;
+    result[t] = temp;
+  }
+  file.close();
+  
+  return result;
 }
