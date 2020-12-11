@@ -25,12 +25,13 @@ struct LightVals {
 // declare global variables
 string weather_id, weather_city, hue_id;
 shared_ptr<Hue> bridge(nullptr);
-vector<HueLight> lights;
+vector<reference_wrapper<HueLight>> lights;
 map<float, LightVals> schedule; 
 shared_ptr<LinHttpHandler> handler = make_shared<LinHttpHandler>();
 
 // declare functions
 json get_weather();
+bool initialize();
 bool initialize_hue();
 bool person_detected();
 LightVals get_light_setting(float, const map<float, LightVals>&);
@@ -38,8 +39,15 @@ LightVals interpolate_light_vals(const LightVals&, const LightVals&, float, floa
 bool set_light_vals(const LightVals& v);
 
 int main() {
+ initialize:
   // perform initialization
+  // consists of 4 steps
+  // 1. read input configuration file
+  // 2. confirm succseful reply from weather api
+  // 3. connect to hue bridge on local network, and retrieve lights
+  // 4. initialize sensors connected to the pi
   cout << "Initializing ..." << endl;
+  
   // load parameters from configuration file
   ifstream config_file;
   config_file.open("../config.txt");
@@ -54,25 +62,35 @@ int main() {
     config_file >> t >> temp.x >> temp.y >> temp.bri >> temp.on;
     schedule[t] = temp;
   }
+  cout << "lights schedule: " << endl;
   for (auto it = schedule.begin(); it != schedule.end(); it++) {
     cout << it->first << ": " << it->second.x << it->second.y << it->second.bri << it->second.on << endl;
   }
   config_file.close();
+  
   // test the weather api
   json j = get_weather();
-  cout << "Sunrise: " << j["sys"]["sunrise"] << endl;
-  cout << "Sunset: " << j["sys"]["sunset"] << endl;
+  if (!j.empty()) {
+    cout << "Sunrise: " << j["sys"]["sunrise"] << endl;
+    cout << "Sunset: " << j["sys"]["sunset"] << endl;
+  } else {
+    cout << "failed on getting weather" << endl;
+    return 0;
+  }
+  
   // connect to the hue bridge
-  initialize_hue();
+  if (initialize_hue() == false) {return 0;}
   cout << "Lights:" << endl;
   for (int i = 0; i < lights.size(); ++i) {
-    cout << i << ": " << lights[i].getName() << endl;
+    cout << i << ": " << lights[i].get().getName() << endl;
   }
+  
   // initialize sensors
   wiringPiSetup();
   const int led = 5;
   pinMode(led, OUTPUT);
   cout << "Intitialization successful" << endl << endl;
+
   goto loop;
   
  loop:
@@ -87,8 +105,13 @@ int main() {
     if (curr_time > time_till_next_midnight) {
       // update the sunrise and sunset
       json j = get_weather();
+      if (j.empty()) {
+        // for now if getting the weather keeps failing, we just keep trying at the next iteration
+        break;
+      }
       sunrise = j["sys"]["sunrise"];
       sunset = j["sys"]["sunset"];
+      
       // convert sunset to local time, and reset it to midnight
       struct tm *sunset_tm = localtime(&curr_time);
       sunset_tm->tm_sec = 0;
@@ -97,7 +120,9 @@ int main() {
       time_till_next_midnight = mktime(sunset_tm);
       // set the next midnight time, + 5 seconds
       time_till_next_midnight += 3600*24 + 5;
-      cout << "Updated next midnight: " << put_time(localtime(&time_till_next_midnight), "%x %X") << endl;
+      cout << "Sunrise updated: " << put_time(localtime(&sunrise), "%x %X") << endl;
+      cout << "Sunset updated: "  << put_time(localtime(&sunset), "%x %X") << endl;
+      cout << "Next weather update: " << put_time(localtime(&time_till_next_midnight), "%x %X") << endl;
     }
     // check the last command
 		
@@ -144,18 +169,18 @@ json get_weather() {
 
 bool initialize_hue() {
   // finds the hue bridge, and intializes the variables which store the lights
-  HueFinder finder(handler);
   try {
+    HueFinder finder(handler);
     vector<HueFinder::HueIdentification> bridges = finder.FindBridges();
     if (bridges.empty()) {
       return false;
     } else {
       bridge = make_shared<Hue>(bridges[0].ip, bridges[0].port, hue_id, handler);
       cout << "bridge found with ip address: " << bridge->getBridgeIP() << endl;
-      // populate lights vector, (manually configured to the setup of my room)
-      lights.push_back(bridge->getLight(1));
-      lights.push_back(bridge->getLight(2));
-      lights.push_back(bridge->getLight(3));
+      // instead of manually populating lights, we use the getAllLights function
+      // however this method wraps the lights inside std::reference_wrapper, which from my understanding
+      // requires the explicit get() method to access the light
+      lights = bridge->getAllLights();
     }
   } catch (...) {
     cout << "exception happenned in initialize_hue()" << endl;
@@ -200,22 +225,22 @@ LightVals interpolate_light_vals(const LightVals& l1, const LightVals& l2, float
 bool set_light_vals(const LightVals& v) {
   try {
     if (v.on) {
-      if (!lights[0].isOn())
-        lights[0].On();
-      if (!lights[1].isOn())
-        lights[1].On();
-      if (!lights[2].isOn())
-        lights[2].On();
-      lights[0].setColorXY(v.x, v.y);
-      lights[1].setColorXY(v.x, v.y);
-      lights[2].setColorXY(v.x, v.y);
-      lights[0].setBrightness(v.bri);
-      lights[1].setBrightness(v.bri);
-      lights[2].setBrightness(v.bri);
+      lights[0].get().setColorXY(v.x, v.y);
+      lights[1].get().setColorXY(v.x, v.y);
+      lights[2].get().setColorXY(v.x, v.y);
+      lights[0].get().setBrightness(v.bri);
+      lights[1].get().setBrightness(v.bri);
+      lights[2].get().setBrightness(v.bri);
+      if (!lights[0].get().isOn())
+        lights[0].get().On();
+      if (!lights[1].get().isOn())
+        lights[1].get().On();
+      if (!lights[2].get().isOn())
+        lights[2].get().On();
     } else {
-      lights[0].Off();
-      lights[1].Off();
-      lights[2].Off();
+      lights[0].get().Off();
+      lights[1].get().Off();
+      lights[2].get().Off();
     }
   } catch (...) {
     cout << "exception occured in set_light_vals()" << endl;
